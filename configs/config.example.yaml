@@ -1,0 +1,42 @@
+app:
+  role: master
+  node_id: master-01
+  log_level: INFO
+  service_name: h265-transcoder
+
+db:
+  url: sqlite:///./transcode.db
+
+redis:
+  url: redis://redis:6379/0
+  stream_key: transcode_tasks
+  group: transcode_workers
+
+storage:
+  input_root: ./data/in
+  output_root: ./data/out
+  output_mode: mirror
+  output_suffix: _h265
+  overwrite: true
+
+transcode:
+  ffmpeg_bin: ffmpeg
+  ffprobe_bin: ffprobe
+  video_codec: libx265
+  crf: 28
+  preset: medium
+  gop: 48
+  audio_codec: aac
+  audio_bitrate: 128k
+  task_timeout_sec: 1800
+  max_retry: 2
+
+worker:
+  worker_id: worker-1
+  concurrency: 2
+  heartbeat_interval_sec: 10
+  poll_block_ms: 5000
+
+scheduler:
+  enabled: false
+  cron: "0 */1 * * *"

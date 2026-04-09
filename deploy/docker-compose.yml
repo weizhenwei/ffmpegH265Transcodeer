@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  master:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.master
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DB_URL: sqlite:///./transcode.db
+    volumes:
+      - ../data/in:/app/data/in
+      - ../data/out:/app/data/out
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DB_URL: sqlite:///./transcode.db
+      WORKER_WORKER_ID: worker-1
+    volumes:
+      - ../data/in:/app/data/in
+      - ../data/out:/app/data/out
