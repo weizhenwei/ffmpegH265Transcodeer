@@ -12,7 +12,7 @@ from app.core.logger import setup_logging
 from app.core.models import Task
 from app.infra.db import Database
 from app.infra.metrics import job_total, start_metrics_server
-from app.infra.redis_queue import InMemoryQueue, RedisStreamQueue
+from app.infra.redis_queue import DatabaseQueue
 from app.master.aggregation_service import AggregationService
 from app.master.dispatch_service import DispatchService
 from app.master.job_service import JobService
@@ -29,21 +29,12 @@ cli = typer.Typer(help="H.265 distributed transcoder CLI")
 logger = logging.getLogger(__name__)
 
 
-def get_queue(settings):
-    try:
-        queue = RedisStreamQueue(settings.redis.url, settings.redis.stream_key, settings.redis.group)
-        logger.info(
-            "queue backend ready",
-            extra={"event": "queue_backend_ready", "service": settings.app.service_name, "node_id": settings.app.node_id},
-        )
-        return queue
-    except Exception as exc:
-        logger.warning(
-            "redis unavailable, fallback to in-memory queue",
-            extra={"event": "queue_backend_fallback", "service": settings.app.service_name, "node_id": settings.app.node_id},
-        )
-        logger.debug("queue backend fallback detail: %s", str(exc))
-        return InMemoryQueue()
+def get_queue(settings, db: Database):
+    logger.info(
+        "redis disabled, using database queue",
+        extra={"event": "queue_backend_database", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
+    return DatabaseQueue(db)
 
 
 def get_db(settings) -> Database:
@@ -72,7 +63,7 @@ def submit(
         extra={"event": "cli_submit_start", "service": settings.app.service_name, "node_id": settings.app.node_id},
     )
     db = get_db(settings)
-    queue = get_queue(settings)
+    queue = get_queue(settings, db)
     job_service = JobService(db)
     scan_service = ScanService(db)
     dispatch_service = DispatchService(db, queue)
@@ -164,7 +155,7 @@ def retry_failed(job_id: str = typer.Option(...)) -> None:
         extra={"event": "cli_retry_failed_start", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job_id},
     )
     db = get_db(settings)
-    queue = get_queue(settings)
+    queue = get_queue(settings, db)
     resent = 0
     with db.session() as session:
         rows = session.execute(select(Task).where(Task.job_id == job_id, Task.status == TaskStatus.FAILED.value)).scalars().all()
@@ -208,7 +199,7 @@ def run_master(recovery_interval_sec: int = typer.Option(20), metrics_port: int 
     setup_logging(settings.app.log_level)
     start_metrics_server(metrics_port)
     db = get_db(settings)
-    queue = get_queue(settings)
+    queue = get_queue(settings, db)
     recovery = RecoveryService(db, queue)
     logger.info(
         "master started",
@@ -230,7 +221,7 @@ def run_worker(metrics_port: int = typer.Option(9109)) -> None:
     setup_logging(settings.app.log_level)
     start_metrics_server(metrics_port)
     db = get_db(settings)
-    queue = get_queue(settings)
+    queue = get_queue(settings, db)
     heartbeat = HeartbeatService(db)
     reporter = ResultReporter(db)
     probe_executor = ProbeExecutor(settings.transcode.ffprobe_bin)

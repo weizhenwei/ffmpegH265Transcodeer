@@ -34,6 +34,7 @@ class WorkerConsumer:
 
     def run_forever(self) -> None:
         last_heartbeat = 0.0
+        last_idle_log = 0.0
         logger.info("worker consumer loop started", extra={"event": "worker_consumer_started", "node_id": self.worker_id})
         while True:
             now = time.time()
@@ -43,6 +44,9 @@ class WorkerConsumer:
                 logger.debug("heartbeat sent", extra={"event": "worker_heartbeat_sent", "node_id": self.worker_id})
             messages = self.queue.pop(consumer=self.worker_id, block_ms=self.poll_block_ms, count=1)
             if not messages:
+                if now - last_idle_log >= 30:
+                    logger.info("worker idle waiting for tasks", extra={"event": "worker_idle_waiting", "node_id": self.worker_id})
+                    last_idle_log = now
                 continue
             for message in messages:
                 payload = message.payload

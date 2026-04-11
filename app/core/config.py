@@ -20,13 +20,6 @@ class DBSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DB_", extra="ignore")
 
 
-class RedisSettings(BaseSettings):
-    url: str = "redis://localhost:6379/0"
-    stream_key: str = "transcode_tasks"
-    group: str = "transcode_workers"
-    model_config = SettingsConfigDict(env_prefix="REDIS_", extra="ignore")
-
-
 class StorageSettings(BaseSettings):
     input_root: str = "./data/in"
     output_root: str = "./data/out"
@@ -68,7 +61,6 @@ class Settings(BaseSettings):
     config_file: str = Field(default="configs/config.example.yaml")
     app: AppSettings = AppSettings()
     db: DBSettings = DBSettings()
-    redis: RedisSettings = RedisSettings()
     storage: StorageSettings = StorageSettings()
     transcode: TranscodeSettings = TranscodeSettings()
     worker: WorkerSettings = WorkerSettings()

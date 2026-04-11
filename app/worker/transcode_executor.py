@@ -8,12 +8,16 @@ class TranscodeExecutor:
         self.ffmpeg_bin = ffmpeg_bin
 
     def run(self, input_path: str, output_path: str, params: dict, timeout_sec: int) -> CmdResult:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        tmp_output = f"{output_path}.tmp"
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = out_path.suffix or ".mp4"
+        tmp_path = out_path.with_name(f"{out_path.stem}.tmp{suffix}")
+        if tmp_path.exists():
+            tmp_path.unlink()
         cmd = build_ffmpeg_command(
             ffmpeg_bin=self.ffmpeg_bin,
             input_path=input_path,
-            output_path=tmp_output,
+            output_path=str(tmp_path),
             video_codec=params.get("video_codec", "libx265"),
             crf=int(params.get("crf", 28)),
             preset=params.get("preset", "medium"),
@@ -23,5 +27,7 @@ class TranscodeExecutor:
         )
         result = run_cmd(cmd, timeout_sec=timeout_sec)
         if result.ok:
-            Path(tmp_output).replace(output_path)
+            tmp_path.replace(out_path)
+        elif tmp_path.exists():
+            tmp_path.unlink()
         return result

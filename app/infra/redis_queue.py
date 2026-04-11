@@ -1,7 +1,9 @@
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 try:
@@ -84,4 +86,73 @@ class InMemoryQueue:
         return result
 
     def ack(self, message_id: str) -> None:
+        return None
+
+
+class DatabaseQueue:
+    def __init__(self, db: object) -> None:
+        self.db = db
+
+    def push(self, payload: dict[str, Any]) -> str:
+        from app.core.enums import TaskStatus
+        from app.core.models import Task
+
+        task_id = payload.get("task_id")
+        if task_id is None:
+            return ""
+        with self.db.session() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                return str(task_id)
+            task.status = TaskStatus.DISPATCHED.value
+            task.retry_count = int(payload.get("retry_count", task.retry_count))
+            task.max_retry = int(payload.get("max_retry", task.max_retry))
+            logger.debug("database queue push task_id=%s", task_id)
+            return task.id
+
+    def pop(self, consumer: str, block_ms: int = 5000, count: int = 1) -> list[QueueMessage]:
+        from app.core.enums import TaskStatus
+        from app.core.models import Job, Task
+
+        timeout_at = time.time() + (block_ms / 1000 if block_ms > 0 else 0)
+        while True:
+            messages: list[QueueMessage] = []
+            with self.db.session() as session:
+                tasks = (
+                    session.query(Task)
+                    .filter(Task.status == TaskStatus.DISPATCHED.value)
+                    .order_by(Task.created_at.asc())
+                    .limit(count)
+                    .all()
+                )
+                for task in tasks:
+                    task.status = TaskStatus.RUNNING.value
+                    task.worker_id = consumer
+                    task.started_at = datetime.utcnow()
+                    params: dict[str, Any] = {}
+                    job = session.get(Job, task.job_id)
+                    if job is not None and job.params_json:
+                        try:
+                            params = json.loads(job.params_json)
+                        except json.JSONDecodeError:
+                            params = {}
+                    payload = {
+                        "task_id": task.id,
+                        "job_id": task.job_id,
+                        "input_path": task.input_path,
+                        "output_path": task.output_path,
+                        "retry_count": task.retry_count,
+                        "max_retry": task.max_retry,
+                        "params": params,
+                    }
+                    messages.append(QueueMessage(message_id=task.id, payload=payload))
+            if messages:
+                logger.debug("database queue pop count=%s consumer=%s", len(messages), consumer)
+                return messages
+            if block_ms <= 0 or time.time() >= timeout_at:
+                return []
+            time.sleep(0.2)
+
+    def ack(self, message_id: str) -> None:
+        logger.debug("database queue ack message_id=%s", message_id)
         return None

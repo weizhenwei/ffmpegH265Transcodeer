@@ -6,7 +6,7 @@ transcode mp4/m3u8 to h265 using ffmpeg.
 - 统一转码为 H.265（默认 libx265）。
 - Master/Worker 分布式架构，支持任务分发与并行执行。
 - 支持任务状态查询、失败重试、超时回收。
-- 支持 Redis Stream 队列，Redis 不可用时自动回退到内存队列。
+- 当前版本默认使用数据库队列（已禁用 Redis 依赖）。
 - 输出结构支持 `flat`（平铺）和 `mirror`（保留目录层级）两种模式。
 
 ## 项目结构
@@ -28,7 +28,7 @@ deploy/
 ## 环境要求
 - Python 3.11+
 - 推荐安装 FFmpeg/ffprobe 并加入 PATH
-- 可选：Redis（用于多进程/多机共享任务队列）
+- FFmpeg/ffprobe
 
 ## 安装与初始化
 ```bash
@@ -90,9 +90,6 @@ python -m app.cli.main run-scheduler
 
 可通过环境变量覆盖关键配置：
 - `DB_URL`：数据库连接串
-- `REDIS_URL`：Redis 连接串
-- `REDIS_STREAM_KEY`：Stream 名称
-- `REDIS_GROUP`：Consumer Group 名称
 - `TRANSCODE_FFMPEG_BIN`：ffmpeg 可执行程序
 - `TRANSCODE_FFPROBE_BIN`：ffprobe 可执行程序
 - `WORKER_WORKER_ID`：Worker 标识
@@ -100,7 +97,6 @@ python -m app.cli.main run-scheduler
 示例：
 ```bash
 set DB_URL=sqlite:///./transcode.db
-set REDIS_URL=redis://localhost:6379/0
 python -m app.cli.main run-worker
 ```
 
@@ -128,7 +124,7 @@ docker compose -f deploy/docker-compose.yml up --build
 容器说明：
 - `master`：执行超时回收等调度逻辑
 - `worker`：执行探测与转码
-- `redis`：任务队列
+- 队列：数据库队列（基于 tasks 表状态流转）
 
 ## 运行流程建议
 1. `init` 初始化目录和数据库。
@@ -139,10 +135,15 @@ docker compose -f deploy/docker-compose.yml up --build
 6. 用 `retry-failed` 处理失败任务。
 
 ## 常见问题
+### 0) `run-worker` 长时间没有结果
+- `run-worker` 是常驻进程，不会自动退出。
+- 如果未先执行 `submit`，worker 会持续等待任务，日志会周期输出 `worker_idle_waiting`。
+- 如已提交任务但仍无进展，先用 `status` 查看是否有 `DISPATCHED/RUNNING`，再排查 `task_probe_failed`/`task_transcode_failed`。
+
 ### 1) 任务提交后无执行
 - 检查是否已启动 `run-worker`。
 - 检查输入目录是否存在有效 mp4/m3u8 文件。
-- 检查日志中是否出现 `queue_backend_fallback` 或队列连接异常。
+- 检查日志中是否出现 `queue_backend_database` 事件，并确认 `submit` 已成功分发任务。
 
 ### 2) `ffmpeg`/`ffprobe` 找不到
 - 确认已安装并加入 PATH。
