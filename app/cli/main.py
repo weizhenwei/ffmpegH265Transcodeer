@@ -31,15 +31,28 @@ logger = logging.getLogger(__name__)
 
 def get_queue(settings):
     try:
-        return RedisStreamQueue(settings.redis.url, settings.redis.stream_key, settings.redis.group)
-    except Exception:
-        logger.warning("redis unavailable, fallback to in-memory queue")
+        queue = RedisStreamQueue(settings.redis.url, settings.redis.stream_key, settings.redis.group)
+        logger.info(
+            "queue backend ready",
+            extra={"event": "queue_backend_ready", "service": settings.app.service_name, "node_id": settings.app.node_id},
+        )
+        return queue
+    except Exception as exc:
+        logger.warning(
+            "redis unavailable, fallback to in-memory queue",
+            extra={"event": "queue_backend_fallback", "service": settings.app.service_name, "node_id": settings.app.node_id},
+        )
+        logger.debug("queue backend fallback detail: %s", str(exc))
         return InMemoryQueue()
 
 
 def get_db(settings) -> Database:
     db = Database(settings.db.url)
     db.create_all()
+    logger.info(
+        "database ready",
+        extra={"event": "database_ready", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     return db
 
 
@@ -54,6 +67,10 @@ def submit(
 ) -> None:
     settings = get_settings()
     setup_logging(settings.app.log_level)
+    logger.info(
+        "submit command started",
+        extra={"event": "cli_submit_start", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     db = get_db(settings)
     queue = get_queue(settings)
     job_service = JobService(db)
@@ -67,8 +84,21 @@ def submit(
         "audio_codec": settings.transcode.audio_codec,
         "audio_bitrate": settings.transcode.audio_bitrate,
     }
+    logger.info(
+        "creating job",
+        extra={"event": "job_create_request", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     job = job_service.create_job(input_root, output_root, params)
     job_service.mark_running(job.id)
+    logger.info(
+        "job marked running",
+        extra={
+            "event": "job_running",
+            "service": settings.app.service_name,
+            "node_id": settings.app.node_id,
+            "job_id": job.id,
+        },
+    )
     tasks = scan_service.scan_and_create_tasks(
         job_id=job.id,
         input_root=input_root,
@@ -79,6 +109,15 @@ def submit(
     )
     dispatched = dispatch_service.dispatch_pending_tasks(job.id, params)
     job_total.labels(status="RUNNING").inc()
+    logger.info(
+        "submit command completed",
+        extra={
+            "event": "cli_submit_done",
+            "service": settings.app.service_name,
+            "node_id": settings.app.node_id,
+            "job_id": job.id,
+        },
+    )
     typer.echo(json.dumps({"job_id": job.id, "task_total": len(tasks), "dispatched": dispatched}, ensure_ascii=False))
 
 
@@ -86,12 +125,20 @@ def submit(
 def status(job_id: str = typer.Option(...)) -> None:
     settings = get_settings()
     setup_logging(settings.app.log_level)
+    logger.info(
+        "status command started",
+        extra={"event": "cli_status_start", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job_id},
+    )
     db = get_db(settings)
     job_service = JobService(db)
     aggregation = AggregationService(job_service)
     aggregation.aggregate(job_id)
     job = job_service.get_job(job_id)
     if job is None:
+        logger.error(
+            "job not found",
+            extra={"event": "job_not_found", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job_id},
+        )
         raise typer.BadParameter("job not found")
     payload = {
         "job_id": job.id,
@@ -101,6 +148,10 @@ def status(job_id: str = typer.Option(...)) -> None:
         "failed": job.failed_count,
         "skipped": job.skipped_count,
     }
+    logger.info(
+        "status command completed",
+        extra={"event": "cli_status_done", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job.id},
+    )
     typer.echo(json.dumps(payload, ensure_ascii=False))
 
 
@@ -108,6 +159,10 @@ def status(job_id: str = typer.Option(...)) -> None:
 def retry_failed(job_id: str = typer.Option(...)) -> None:
     settings = get_settings()
     setup_logging(settings.app.log_level)
+    logger.info(
+        "retry-failed command started",
+        extra={"event": "cli_retry_failed_start", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job_id},
+    )
     db = get_db(settings)
     queue = get_queue(settings)
     resent = 0
@@ -130,6 +185,20 @@ def retry_failed(job_id: str = typer.Option(...)) -> None:
                 }
             )
             resent += 1
+            logger.info(
+                "failed task requeued",
+                extra={
+                    "event": "task_requeued",
+                    "service": settings.app.service_name,
+                    "node_id": settings.app.node_id,
+                    "job_id": task.job_id,
+                    "task_id": task.id,
+                },
+            )
+    logger.info(
+        "retry-failed command completed",
+        extra={"event": "cli_retry_failed_done", "service": settings.app.service_name, "node_id": settings.app.node_id, "job_id": job_id},
+    )
     typer.echo(json.dumps({"job_id": job_id, "resent": resent}, ensure_ascii=False))
 
 
@@ -141,9 +210,17 @@ def run_master(recovery_interval_sec: int = typer.Option(20), metrics_port: int 
     db = get_db(settings)
     queue = get_queue(settings)
     recovery = RecoveryService(db, queue)
-    logger.info("master started")
+    logger.info(
+        "master started",
+        extra={"event": "master_started", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     while True:
-        recovery.reclaim_stuck_tasks(settings.transcode.task_timeout_sec)
+        reclaimed = recovery.reclaim_stuck_tasks(settings.transcode.task_timeout_sec)
+        if reclaimed > 0:
+            logger.info(
+                "master reclaimed tasks",
+                extra={"event": "master_reclaimed_tasks", "service": settings.app.service_name, "node_id": settings.app.node_id},
+            )
         time.sleep(recovery_interval_sec)
 
 
@@ -169,7 +246,10 @@ def run_worker(metrics_port: int = typer.Option(9109)) -> None:
         heartbeat_interval_sec=settings.worker.heartbeat_interval_sec,
         heartbeat_fn=lambda: heartbeat.beat(settings.worker.worker_id, settings.worker.concurrency),
     )
-    logger.info("worker started")
+    logger.info(
+        "worker started",
+        extra={"event": "worker_started", "service": settings.app.service_name, "node_id": settings.worker.worker_id},
+    )
     consumer.run_forever()
 
 
@@ -178,9 +258,16 @@ def run_scheduler() -> None:
     settings = get_settings()
     setup_logging(settings.app.log_level)
     scheduler = SchedulerService()
+    logger.info(
+        "scheduler started",
+        extra={"event": "scheduler_started", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
 
     def tick() -> None:
-        logger.info("scheduler tick")
+        logger.info(
+            "scheduler tick",
+            extra={"event": "scheduler_tick", "service": settings.app.service_name, "node_id": settings.app.node_id},
+        )
 
     scheduler.add_cron_job(settings.scheduler.cron, tick)
     scheduler.run()
@@ -190,10 +277,18 @@ def run_scheduler() -> None:
 def init_project() -> None:
     settings = get_settings()
     setup_logging(settings.app.log_level)
+    logger.info(
+        "init command started",
+        extra={"event": "cli_init_start", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     settings.ensure_directories()
     db = get_db(settings)
     db.create_all()
     Path("logs").mkdir(exist_ok=True)
+    logger.info(
+        "init command completed",
+        extra={"event": "cli_init_done", "service": settings.app.service_name, "node_id": settings.app.node_id},
+    )
     typer.echo("initialized")
 
 

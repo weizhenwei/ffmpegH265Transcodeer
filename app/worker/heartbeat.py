@@ -1,8 +1,11 @@
 import socket
+import logging
 from datetime import datetime
 
 from app.core.models import WorkerNode
 from app.infra.db import Database
+
+logger = logging.getLogger(__name__)
 
 
 class HeartbeatService:
@@ -21,7 +24,9 @@ class HeartbeatService:
                     last_heartbeat_at=datetime.utcnow(),
                 )
                 session.add(node)
+                logger.info("worker node registered", extra={"event": "worker_registered", "node_id": worker_id})
                 return
             node.capacity = capacity
             node.status = "online"
             node.last_heartbeat_at = datetime.utcnow()
+            logger.debug("worker heartbeat updated", extra={"event": "worker_heartbeat_updated", "node_id": worker_id})

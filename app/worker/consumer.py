@@ -34,17 +34,20 @@ class WorkerConsumer:
 
     def run_forever(self) -> None:
         last_heartbeat = 0.0
+        logger.info("worker consumer loop started", extra={"event": "worker_consumer_started", "node_id": self.worker_id})
         while True:
             now = time.time()
             if self.heartbeat_fn is not None and now - last_heartbeat >= self.heartbeat_interval_sec:
                 self.heartbeat_fn()
                 last_heartbeat = now
+                logger.debug("heartbeat sent", extra={"event": "worker_heartbeat_sent", "node_id": self.worker_id})
             messages = self.queue.pop(consumer=self.worker_id, block_ms=self.poll_block_ms, count=1)
             if not messages:
                 continue
             for message in messages:
                 payload = message.payload
                 task_id = payload["task_id"]
+                logger.info("task received", extra={"event": "task_received", "node_id": self.worker_id, "task_id": task_id})
                 retry_count = int(payload.get("retry_count", 0))
                 max_retry = int(payload.get("max_retry", 2))
                 self.reporter.mark_running(task_id, self.worker_id)
@@ -55,6 +58,15 @@ class WorkerConsumer:
                         retry_total.inc()
                         payload["retry_count"] = retry_count + 1
                         self.queue.push(payload)
+                        logger.warning(
+                            "probe failed and task requeued",
+                            extra={"event": "task_probe_retry", "node_id": self.worker_id, "task_id": task_id},
+                        )
+                    else:
+                        logger.error(
+                            "probe failed and task marked failed",
+                            extra={"event": "task_probe_failed", "node_id": self.worker_id, "task_id": task_id},
+                        )
                     self.queue.ack(message.message_id)
                     task_total.labels(status="FAILED").inc()
                     continue
@@ -68,13 +80,26 @@ class WorkerConsumer:
                     self.reporter.mark_success(task_id, probe_result, result.duration_ms)
                     task_total.labels(status="SUCCESS").inc()
                     task_duration_seconds.observe(result.duration_ms / 1000)
+                    logger.info(
+                        "task transcoded successfully",
+                        extra={"event": "task_transcode_success", "node_id": self.worker_id, "task_id": task_id},
+                    )
                 else:
                     should_retry = self.reporter.mark_failure(task_id, result.stderr, retry_count + 1, max_retry)
                     if should_retry:
                         retry_total.inc()
                         payload["retry_count"] = retry_count + 1
                         self.queue.push(payload)
+                        logger.warning(
+                            "transcode failed and task requeued",
+                            extra={"event": "task_transcode_retry", "node_id": self.worker_id, "task_id": task_id},
+                        )
                     else:
                         task_total.labels(status="FAILED").inc()
+                        logger.error(
+                            "transcode failed and task marked failed",
+                            extra={"event": "task_transcode_failed", "node_id": self.worker_id, "task_id": task_id},
+                        )
                 self.queue.ack(message.message_id)
+                logger.debug("message acked", extra={"event": "task_message_acked", "node_id": self.worker_id, "task_id": task_id})
             time.sleep(0.01)
