@@ -118,17 +118,31 @@ class DatabaseQueue:
         while True:
             messages: list[QueueMessage] = []
             with self.db.session() as session:
-                tasks = (
-                    session.query(Task)
+                candidate_ids = (
+                    session.query(Task.id)
                     .filter(Task.status == TaskStatus.DISPATCHED.value)
                     .order_by(Task.created_at.asc())
-                    .limit(count)
+                    .limit(max(count * 4, count))
                     .all()
                 )
-                for task in tasks:
-                    task.status = TaskStatus.RUNNING.value
-                    task.worker_id = consumer
-                    task.started_at = datetime.utcnow()
+                for (task_id,) in candidate_ids:
+                    updated = (
+                        session.query(Task)
+                        .filter(Task.id == task_id, Task.status == TaskStatus.DISPATCHED.value)
+                        .update(
+                            {
+                                Task.status: TaskStatus.RUNNING.value,
+                                Task.worker_id: consumer,
+                                Task.started_at: datetime.utcnow(),
+                            },
+                            synchronize_session=False,
+                        )
+                    )
+                    if updated != 1:
+                        continue
+                    task = session.get(Task, task_id)
+                    if task is None:
+                        continue
                     params: dict[str, Any] = {}
                     job = session.get(Job, task.job_id)
                     if job is not None and job.params_json:
@@ -146,6 +160,8 @@ class DatabaseQueue:
                         "params": params,
                     }
                     messages.append(QueueMessage(message_id=task.id, payload=payload))
+                    if len(messages) >= count:
+                        break
             if messages:
                 logger.debug("database queue pop count=%s consumer=%s", len(messages), consumer)
                 return messages

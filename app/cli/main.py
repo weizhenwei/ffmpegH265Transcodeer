@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import socket
 import time
 from pathlib import Path
 
@@ -222,6 +224,7 @@ def run_worker(metrics_port: int = typer.Option(9109)) -> None:
     start_metrics_server(metrics_port)
     db = get_db(settings)
     queue = get_queue(settings, db)
+    worker_id = settings.worker.worker_id.strip() or f"{socket.gethostname()}-{os.getpid()}"
     heartbeat = HeartbeatService(db)
     reporter = ResultReporter(db)
     probe_executor = ProbeExecutor(settings.transcode.ffprobe_bin)
@@ -231,15 +234,15 @@ def run_worker(metrics_port: int = typer.Option(9109)) -> None:
         reporter=reporter,
         probe_executor=probe_executor,
         transcode_executor=transcode_executor,
-        worker_id=settings.worker.worker_id,
+        worker_id=worker_id,
         task_timeout_sec=settings.transcode.task_timeout_sec,
         poll_block_ms=settings.worker.poll_block_ms,
         heartbeat_interval_sec=settings.worker.heartbeat_interval_sec,
-        heartbeat_fn=lambda: heartbeat.beat(settings.worker.worker_id, settings.worker.concurrency),
+        heartbeat_fn=lambda: heartbeat.beat(worker_id, settings.worker.concurrency),
     )
     logger.info(
         "worker started",
-        extra={"event": "worker_started", "service": settings.app.service_name, "node_id": settings.worker.worker_id},
+        extra={"event": "worker_started", "service": settings.app.service_name, "node_id": worker_id},
     )
     consumer.run_forever()
 

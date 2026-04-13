@@ -9,7 +9,7 @@ from app.core.models import Base
 
 class Database:
     def __init__(self, url: str) -> None:
-        self.engine = create_engine(url, future=True)
+        self.engine = create_engine(url, future=True, pool_pre_ping=True)
         self.session_factory = sessionmaker(
             bind=self.engine, autocommit=False, autoflush=False, future=True, expire_on_commit=False
         )

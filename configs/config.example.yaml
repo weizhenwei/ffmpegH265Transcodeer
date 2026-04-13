@@ -5,7 +5,7 @@ app:
   service_name: h265-transcoder
 
 db:
-  url: sqlite:///./transcode.db
+  url: postgresql+psycopg://transcoder:transcoder@postgres:5432/transcode
 
 storage:
   input_root: ./data/in
@@ -27,7 +27,7 @@ transcode:
   max_retry: 2
 
 worker:
-  worker_id: worker-1
+  worker_id: ""
   concurrency: 2
   heartbeat_interval_sec: 10
   poll_block_ms: 5000

@@ -36,7 +36,7 @@ python -m app.cli.main init
 执行 `init` 后会创建/确保：
 - `data/in` 输入目录
 - `data/out` 输出目录
-- `transcode.db` SQLite 数据库
+- 数据库表结构（由 `DB_URL` 指定的数据库承载，推荐 PostgreSQL）
 
 ## 5. 快速开始
 ### 步骤 1：准备输入文件
@@ -140,14 +140,19 @@ python -m app.cli.main run-scheduler
 - `DB_URL`：数据库连接地址
 - `TRANSCODE_FFMPEG_BIN`：ffmpeg 可执行路径
 - `TRANSCODE_FFPROBE_BIN`：ffprobe 可执行路径
-- `WORKER_WORKER_ID`：worker 唯一标识
+- `WORKER_WORKER_ID`：worker 唯一标识（为空时自动生成 `hostname-pid`）
 
 示例：
 ```bash
-set DB_URL=sqlite:///./transcode.db
+set DB_URL=postgresql+psycopg://transcoder:transcoder@localhost:5432/transcode
 set WORKER_WORKER_ID=worker-2
 python -m app.cli.main run-worker
 ```
+
+分布式运行建议：
+- submit/master/worker 必须使用同一个 `DB_URL`。
+- 多 worker 实例请使用不同 `WORKER_WORKER_ID`（或留空自动生成）。
+- 多节点部署时，所有节点需挂载同一输入/输出存储路径。
 
 ## 8. 输出文件规则
 - 输出文件默认统一为 `.mp4` 封装。
@@ -180,9 +185,12 @@ python -m app.cli.main run-worker
 ## 10. Docker 使用
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
+# 按需扩容 worker
+docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
 容器说明：
+- `postgres`：共享元数据库
 - `master`：恢复与调度相关循环
 - `worker`：消费并执行转码
 
@@ -193,9 +201,10 @@ docker compose -f deploy/docker-compose.yml up --build
 ### 11.2 提交成功但无转码输出
 检查顺序：
 1. 是否已启动 `run-worker`
-2. `status` 是否有 `DISPATCHED/RUNNING`
-3. 日志是否出现 `task_probe_failed` 或 `task_transcode_failed`
-4. 输入目录是否确实包含可读文件
+2. submit/master/worker 的 `DB_URL` 是否一致并可连通
+3. `status` 是否有 `DISPATCHED/RUNNING`
+4. 日志是否出现 `task_probe_failed` 或 `task_transcode_failed`
+5. 输入目录是否确实包含可读文件
 
 ### 11.3 ffmpeg/ffprobe 找不到
 - 安装 FFmpeg 并加入 PATH
@@ -222,4 +231,4 @@ docker compose -f deploy/docker-compose.yml up --build
 ## 13. 升级与维护建议
 - 定期清理历史任务数据（jobs/tasks 表）避免数据库膨胀。
 - 为生产环境改用 PostgreSQL 等外部数据库。
-- 多 worker 运行时保证 `WORKER_WORKER_ID` 唯一。
+- 多 worker 运行时保证 `WORKER_WORKER_ID` 唯一（或留空自动生成）。

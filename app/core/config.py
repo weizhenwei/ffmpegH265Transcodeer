@@ -44,7 +44,7 @@ class TranscodeSettings(BaseSettings):
 
 
 class WorkerSettings(BaseSettings):
-    worker_id: str = "worker-1"
+    worker_id: str = ""
     concurrency: int = 2
     heartbeat_interval_sec: int = 10
     poll_block_ms: int = 5000
@@ -76,8 +76,23 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     config_path = os.getenv("CONFIG_FILE", "configs/config.example.yaml")
+    payload: dict = {}
     if Path(config_path).exists():
         with open(config_path, "r", encoding="utf-8") as fp:
             payload = yaml.safe_load(fp) or {}
-        return Settings.model_validate(payload)
-    return Settings()
+
+    # Explicit env overrides for critical runtime settings in containerized/distributed deployments.
+    db_url = os.getenv("DB_URL")
+    if db_url:
+        payload.setdefault("db", {})["url"] = db_url
+    ffmpeg_bin = os.getenv("TRANSCODE_FFMPEG_BIN")
+    if ffmpeg_bin:
+        payload.setdefault("transcode", {})["ffmpeg_bin"] = ffmpeg_bin
+    ffprobe_bin = os.getenv("TRANSCODE_FFPROBE_BIN")
+    if ffprobe_bin:
+        payload.setdefault("transcode", {})["ffprobe_bin"] = ffprobe_bin
+    worker_id = os.getenv("WORKER_WORKER_ID")
+    if worker_id is not None:
+        payload.setdefault("worker", {})["worker_id"] = worker_id
+
+    return Settings.model_validate(payload)

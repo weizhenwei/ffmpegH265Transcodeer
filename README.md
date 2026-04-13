@@ -6,7 +6,7 @@ transcode mp4/m3u8 to h265 using ffmpeg.
 - 统一转码为 H.265（默认 libx265）。
 - Master/Worker 分布式架构，支持任务分发与并行执行。
 - 支持任务状态查询、失败重试、超时回收。
-- 当前版本默认使用数据库队列（已禁用 Redis 依赖）。
+- 当前版本默认使用数据库队列（已禁用 Redis 依赖），支持多 worker 集群消费。
 - 输出结构支持 `flat`（平铺）和 `mirror`（保留目录层级）两种模式。
 
 ## 项目结构
@@ -28,7 +28,7 @@ deploy/
 ## 环境要求
 - Python 3.11+
 - 推荐安装 FFmpeg/ffprobe 并加入 PATH
-- FFmpeg/ffprobe
+- PostgreSQL（分布式部署推荐，Docker 方案已内置）
 
 ## 安装与初始化
 ```bash
@@ -39,7 +39,7 @@ python -m app.cli.main init
 初始化后会创建：
 - `./data/in`：输入目录
 - `./data/out`：输出目录
-- `./transcode.db`：SQLite 元数据库（默认）
+- 元数据库（默认通过 `DB_URL` 指定，推荐 PostgreSQL）
 
 ## 本地运行（单机）
 ### 1) 准备输入文件
@@ -96,9 +96,14 @@ python -m app.cli.main run-scheduler
 
 示例：
 ```bash
-set DB_URL=sqlite:///./transcode.db
+set DB_URL=postgresql+psycopg://transcoder:transcoder@localhost:5432/transcode
 python -m app.cli.main run-worker
 ```
+
+分布式部署建议：
+- 使用 PostgreSQL 作为共享元数据库（`DB_URL=postgresql+psycopg://...`）。
+- 多 worker 使用不同 `WORKER_WORKER_ID`；若为空将自动生成 `hostname-pid`。
+- 所有节点需挂载同一输入/输出存储路径。
 
 ## 日志与可观测性
 - 日志采用 JSON 结构化输出，包含 `event/job_id/task_id/node_id` 等字段。
@@ -119,20 +124,24 @@ python -m app.cli.main run-worker
 ## Docker 运行
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
+# 扩容 worker（示例）
+docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
 容器说明：
 - `master`：执行超时回收等调度逻辑
 - `worker`：执行探测与转码
 - 队列：数据库队列（基于 tasks 表状态流转）
+- `postgres`：共享元数据库（支持多机/多实例协作）
 
 ## 运行流程建议
-1. `init` 初始化目录和数据库。
+1. 启动 `postgres`（若使用 compose，可一步拉起）。
 2. 启动 `run-master`（可选但推荐，用于恢复机制）。
 3. 启动一个或多个 `run-worker`。
 4. 使用 `submit` 提交任务。
 5. 使用 `status` 追踪任务进度。
 6. 用 `retry-failed` 处理失败任务。
+7. 多节点时确保各节点共享输入/输出存储。
 
 ## 常见问题
 ### 0) `run-worker` 长时间没有结果
@@ -142,6 +151,7 @@ docker compose -f deploy/docker-compose.yml up --build
 
 ### 1) 任务提交后无执行
 - 检查是否已启动 `run-worker`。
+- 检查 `DB_URL` 在 submit/master/worker 三端是否一致并可连通。
 - 检查输入目录是否存在有效 mp4/m3u8 文件。
 - 检查日志中是否出现 `queue_backend_database` 事件，并确认 `submit` 已成功分发任务。
 
