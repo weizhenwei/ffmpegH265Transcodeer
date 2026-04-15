@@ -8,6 +8,7 @@ db:
   url: postgresql+psycopg://transcoder:transcoder@postgres:5432/transcode
 
 storage:
+  # 分布式部署建议使用共享存储挂载路径，所有 master/worker 节点保持一致
   input_root: ./data/in
   output_root: ./data/out
   output_mode: mirror

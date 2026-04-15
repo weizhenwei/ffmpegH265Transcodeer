@@ -1,21 +1,27 @@
 # ffmpegH265Transcodeer
-transcode mp4/m3u8 to h265 using ffmpeg.
+一个基于 FFmpeg 的 H.265 分布式转码系统，支持单机和多机部署。
 
-## 功能概览
-- 目录级批量扫描，支持 MP4、M3U8 输入。
-- 统一转码为 H.265（默认 libx265）。
-- Master/Worker 分布式架构，支持任务分发与并行执行。
-- 支持任务状态查询、失败重试、超时回收。
-- 当前版本默认使用数据库队列（已禁用 Redis 依赖），支持多 worker 集群消费。
-- 输出结构支持 `flat`（平铺）和 `mirror`（保留目录层级）两种模式。
+## 1. 系统能力
+- 支持目录级批量扫描输入文件（`.mp4`、`.m3u8`）。
+- 支持 Master/Worker 架构，主节点调度，计算节点执行。
+- 支持共享存储增量扫描，仅处理新增未转码文件。
+- 支持按在线 Worker 的 `capacity` 加权平均分配任务。
+- 支持任务状态查询、失败重试、超时回收、节点心跳保活。
+- 默认使用数据库队列（`tasks` 状态流转），无需 Redis。
 
-## 项目结构
+## 2. 核心架构
+- `主节点（Master）`：扫描输入目录、创建任务、分发任务、回收超时任务、统计结果。
+- `计算节点（Worker）`：启动注册、周期心跳、领取任务、执行 ffprobe + ffmpeg、回传结果。
+- `共享存储`：所有节点共享 `input/output` 目录。
+- `共享数据库`：所有节点共享 `DB_URL` 对应数据库（分布式推荐 PostgreSQL）。
+
+## 3. 目录结构
 ```text
 app/
-  cli/                 # 命令行入口
+  cli/                 # CLI 入口与命令
   core/                # 配置、模型、日志、枚举
   infra/               # DB、队列、ffmpeg、metrics
-  master/              # 扫描、分发、汇总、恢复
+  master/              # 扫描、分发、聚合、恢复
   worker/              # 消费、探测、转码、结果回写、心跳
 configs/
   config.example.yaml
@@ -23,143 +29,146 @@ deploy/
   docker-compose.yml
   Dockerfile.master
   Dockerfile.worker
+documents/
+  user_guide.md        # 详细使用手册
 ```
 
-## 环境要求
+## 4. 环境要求
 - Python 3.11+
-- 推荐安装 FFmpeg/ffprobe 并加入 PATH
-- PostgreSQL（分布式部署推荐，Docker 方案已内置）
+- FFmpeg/ffprobe（建议加入 PATH）
+- 单机可用 SQLite，分布式建议 PostgreSQL
 
-## 安装与初始化
+## 5. 安装初始化
 ```bash
 pip install -r requirements.txt
 python -m app.cli.main init
 ```
 
-初始化后会创建：
-- `./data/in`：输入目录
-- `./data/out`：输出目录
-- 元数据库（默认通过 `DB_URL` 指定，推荐 PostgreSQL）
+初始化后会确保：
+- 输入目录：`./data/in`
+- 输出目录：`./data/out`
+- 数据库表结构创建完成
 
-## 本地运行（单机）
-### 1) 准备输入文件
-- 把待转码 `.mp4` 或 `.m3u8` 放入 `./data/in`。
+## 6. 单机使用手册
+### 6.1 准备输入
+- 将待转码文件放入 `./data/in`。
 
-### 2) 提交任务
-```bash
-python -m app.cli.main submit --input-root ./data/in --output-root ./data/out
-```
-返回示例：
-```json
-{"job_id":"<JOB_ID>","task_total":10,"dispatched":8}
-```
-
-### 3) 启动 Worker
+### 6.2 启动 Worker
 ```bash
 python -m app.cli.main run-worker
 ```
 
-### 4) 查询状态
+### 6.3 提交任务
 ```bash
-python -m app.cli.main status --job-id <JOB_ID>
-```
-返回示例：
-```json
-{"job_id":"<JOB_ID>","status":"RUNNING","total":10,"success":4,"failed":1,"skipped":2}
+python -m app.cli.main submit --input-root ./data/in --output-root ./data/out
 ```
 
-### 5) 重试失败任务
+返回示例：
+```json
+{"job_id":"<JOB_ID>","task_total":12,"dispatched":10}
+```
+
+### 6.4 查看进度
+```bash
+python -m app.cli.main status --job-id <JOB_ID>
+python -m app.cli.main stats --job-id <JOB_ID>
+```
+
+### 6.5 失败重试
 ```bash
 python -m app.cli.main retry-failed --job-id <JOB_ID>
 ```
 
-## 常用命令
+## 7. 分布式使用手册
+### 7.1 准备共享资源
+- 所有节点挂载同一个输入目录与输出目录（例如 `/mnt/transcode/input`、`/mnt/transcode/output`）。
+- 所有节点连接同一个数据库（建议 PostgreSQL）。
+
+### 7.2 节点环境变量
+Windows PowerShell:
+```powershell
+$env:DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+$env:STORAGE_INPUT_ROOT="\\nas\transcode\input"
+$env:STORAGE_OUTPUT_ROOT="\\nas\transcode\output"
+```
+
+Linux/macOS:
+```bash
+export DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+export STORAGE_INPUT_ROOT="/mnt/transcode/input"
+export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
+```
+
+### 7.3 启动顺序（推荐）
+1. 主节点执行初始化（一次）：
+```bash
+python -m app.cli.main init
+```
+2. 主节点启动调度恢复循环：
+```bash
+python -m app.cli.main run-master
+```
+3. 每个计算节点启动 worker（每台唯一 ID）：
+```bash
+export WORKER_WORKER_ID="worker-01"
+python -m app.cli.main run-worker
+```
+4. 主节点发起转码（使用共享目录）：
+```bash
+python -m app.cli.main start-transcode
+```
+5. 查询节点与任务统计：
+```bash
+python -m app.cli.main workers
+python -m app.cli.main stats
+```
+
+## 8. 命令速查
 ```bash
 python -m app.cli.main --help
 python -m app.cli.main init
 python -m app.cli.main submit --input-root ./data/in --output-root ./data/out --suffix _h265 --mode mirror --crf 28 --max-retry 2
+python -m app.cli.main start-transcode
 python -m app.cli.main status --job-id <JOB_ID>
 python -m app.cli.main retry-failed --job-id <JOB_ID>
 python -m app.cli.main run-master
 python -m app.cli.main run-worker
-python -m app.cli.main run-scheduler
+python -m app.cli.main workers
+python -m app.cli.main stats
+python -m app.cli.main stats --job-id <JOB_ID>
 ```
 
-## 配置说明
+## 9. 配置项与环境变量
 默认配置文件：`configs/config.example.yaml`
 
-可通过环境变量覆盖关键配置：
-- `DB_URL`：数据库连接串
-- `TRANSCODE_FFMPEG_BIN`：ffmpeg 可执行程序
-- `TRANSCODE_FFPROBE_BIN`：ffprobe 可执行程序
-- `WORKER_WORKER_ID`：Worker 标识
+关键环境变量：
+- `DB_URL`
+- `TRANSCODE_FFMPEG_BIN`
+- `TRANSCODE_FFPROBE_BIN`
+- `WORKER_WORKER_ID`
+- `STORAGE_INPUT_ROOT`
+- `STORAGE_OUTPUT_ROOT`
+- `STORAGE_OUTPUT_MODE`（`mirror/flat`）
+- `STORAGE_OUTPUT_SUFFIX`
 
-示例：
-```bash
-set DB_URL=postgresql+psycopg://transcoder:transcoder@localhost:5432/transcode
-python -m app.cli.main run-worker
-```
-
-分布式部署建议：
-- 使用 PostgreSQL 作为共享元数据库（`DB_URL=postgresql+psycopg://...`）。
-- 多 worker 使用不同 `WORKER_WORKER_ID`；若为空将自动生成 `hostname-pid`。
-- 所有节点需挂载同一输入/输出存储路径。
-
-## 日志与可观测性
-- 日志采用 JSON 结构化输出，包含 `event/job_id/task_id/node_id` 等字段。
-- 已在 CLI、Master、Worker、队列、转码执行路径补充关键日志，便于排查。
-- 指标端口：
-  - `run-master` 默认 `9108`
-  - `run-worker` 默认 `9109`
-
-常见日志事件示例：
-- `cli_submit_start` / `cli_submit_done`
-- `task_dispatched`
-- `task_received`
-- `task_transcode_success`
-- `task_transcode_retry`
-- `task_transcode_failed`
-- `task_recovered`
-
-## Docker 运行
+## 10. Docker 使用
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
-# 扩容 worker（示例）
 docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
-容器说明：
-- `master`：执行超时回收等调度逻辑
-- `worker`：执行探测与转码
-- 队列：数据库队列（基于 tasks 表状态流转）
-- `postgres`：共享元数据库（支持多机/多实例协作）
+## 11. 常见问题
+### 11.1 Worker 一直运行不退出
+- 正常行为。`run-worker` 是常驻进程。
 
-## 运行流程建议
-1. 启动 `postgres`（若使用 compose，可一步拉起）。
-2. 启动 `run-master`（可选但推荐，用于恢复机制）。
-3. 启动一个或多个 `run-worker`。
-4. 使用 `submit` 提交任务。
-5. 使用 `status` 追踪任务进度。
-6. 用 `retry-failed` 处理失败任务。
-7. 多节点时确保各节点共享输入/输出存储。
+### 11.2 已提交任务但未执行
+- 检查 `workers` 输出是否有在线节点。
+- 检查所有节点 `DB_URL` 是否一致。
+- 检查共享目录路径是否在所有节点可访问。
 
-## 常见问题
-### 0) `run-worker` 长时间没有结果
-- `run-worker` 是常驻进程，不会自动退出。
-- 如果未先执行 `submit`，worker 会持续等待任务，日志会周期输出 `worker_idle_waiting`。
-- 如已提交任务但仍无进展，先用 `status` 查看是否有 `DISPATCHED/RUNNING`，再排查 `task_probe_failed`/`task_transcode_failed`。
+### 11.3 ffmpeg/ffprobe 找不到
+- 安装后加入 PATH，或通过 `TRANSCODE_FFMPEG_BIN`/`TRANSCODE_FFPROBE_BIN` 指定绝对路径。
 
-### 1) 任务提交后无执行
-- 检查是否已启动 `run-worker`。
-- 检查 `DB_URL` 在 submit/master/worker 三端是否一致并可连通。
-- 检查输入目录是否存在有效 mp4/m3u8 文件。
-- 检查日志中是否出现 `queue_backend_database` 事件，并确认 `submit` 已成功分发任务。
-
-### 2) `ffmpeg`/`ffprobe` 找不到
-- 确认已安装并加入 PATH。
-- 或通过 `TRANSCODE_FFMPEG_BIN` / `TRANSCODE_FFPROBE_BIN` 指定绝对路径。
-
-### 3) 输出目录没有结果
-- 检查 `status` 中 `failed/skipped` 数量。
-- 查日志 `task_probe_failed`、`task_transcode_failed` 的错误信息。
-- 检查输入文件是否损坏或编码不受支持。
+### 11.4 输出目录无结果
+- 用 `status/stats` 看失败或跳过数量。
+- 查看日志中的 `task_probe_failed` 或 `task_transcode_failed` 详情。

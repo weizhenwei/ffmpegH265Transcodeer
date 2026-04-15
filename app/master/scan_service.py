@@ -1,6 +1,8 @@
 from pathlib import Path
 import logging
 
+from sqlalchemy import select
+
 from app.core.enums import TaskStatus
 from app.core.models import Task
 from app.infra.db import Database
@@ -47,6 +49,54 @@ class ScanService:
                     continue
                 out_path = build_output_path(input_root, output_root, src_path, output_suffix, output_mode)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
+
+                if out_path.exists():
+                    task = Task(
+                        job_id=job_id,
+                        input_path=str(src_path),
+                        output_path=str(out_path),
+                        input_format=src_path.suffix.lower().lstrip("."),
+                        status=TaskStatus.SKIPPED.value,
+                        max_retry=max_retry,
+                        stderr_summary="already transcoded (output exists)",
+                    )
+                    session.add(task)
+                    created.append(task)
+                    logger.info(
+                        "task skipped output exists",
+                        extra={"event": "task_skipped_output_exists", "job_id": job_id},
+                    )
+                    continue
+
+                existed = session.execute(
+                    select(Task.id).where(
+                        Task.input_path == str(src_path),
+                        Task.status.in_(
+                            [
+                                TaskStatus.PENDING.value,
+                                TaskStatus.DISPATCHED.value,
+                                TaskStatus.RUNNING.value,
+                                TaskStatus.RETRYING.value,
+                                TaskStatus.SUCCESS.value,
+                            ]
+                        ),
+                    )
+                ).first()
+                if existed:
+                    task = Task(
+                        job_id=job_id,
+                        input_path=str(src_path),
+                        output_path=str(out_path),
+                        input_format=src_path.suffix.lower().lstrip("."),
+                        status=TaskStatus.SKIPPED.value,
+                        max_retry=max_retry,
+                        stderr_summary="already tracked by existing task",
+                    )
+                    session.add(task)
+                    created.append(task)
+                    logger.info("task skipped existing", extra={"event": "task_skipped_existing", "job_id": job_id})
+                    continue
+
                 task = Task(
                     job_id=job_id,
                     input_path=str(src_path),

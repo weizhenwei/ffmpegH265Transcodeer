@@ -61,6 +61,7 @@ class WorkerConsumer:
                     if should_retry:
                         retry_total.inc()
                         payload["retry_count"] = retry_count + 1
+                        payload["worker_id"] = None
                         self.queue.push(payload)
                         logger.warning(
                             "probe failed and task requeued",
@@ -93,6 +94,7 @@ class WorkerConsumer:
                     if should_retry:
                         retry_total.inc()
                         payload["retry_count"] = retry_count + 1
+                        payload["worker_id"] = None
                         self.queue.push(payload)
                         logger.warning(
                             "transcode failed and task requeued",

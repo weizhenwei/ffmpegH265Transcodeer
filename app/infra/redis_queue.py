@@ -105,6 +105,8 @@ class DatabaseQueue:
             if task is None:
                 return str(task_id)
             task.status = TaskStatus.DISPATCHED.value
+            if "worker_id" in payload:
+                task.worker_id = payload.get("worker_id")
             task.retry_count = int(payload.get("retry_count", task.retry_count))
             task.max_retry = int(payload.get("max_retry", task.max_retry))
             logger.debug("database queue push task_id=%s", task_id)
@@ -121,6 +123,7 @@ class DatabaseQueue:
                 candidate_ids = (
                     session.query(Task.id)
                     .filter(Task.status == TaskStatus.DISPATCHED.value)
+                    .filter((Task.worker_id == consumer) | (Task.worker_id.is_(None)))
                     .order_by(Task.created_at.asc())
                     .limit(max(count * 4, count))
                     .all()
@@ -128,7 +131,11 @@ class DatabaseQueue:
                 for (task_id,) in candidate_ids:
                     updated = (
                         session.query(Task)
-                        .filter(Task.id == task_id, Task.status == TaskStatus.DISPATCHED.value)
+                        .filter(
+                            Task.id == task_id,
+                            Task.status == TaskStatus.DISPATCHED.value,
+                            ((Task.worker_id == consumer) | (Task.worker_id.is_(None))),
+                        )
                         .update(
                             {
                                 Task.status: TaskStatus.RUNNING.value,

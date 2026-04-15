@@ -36,9 +36,11 @@ class RecoveryService:
                             "retry_count": task.retry_count,
                             "max_retry": task.max_retry,
                             "params": {},
+                            "worker_id": None,
                         }
                     )
                     task.status = TaskStatus.DISPATCHED.value
+                    task.worker_id = None
                     logger.info(
                         "stuck task re-dispatched",
                         extra={"event": "task_recovered", "job_id": task.job_id, "task_id": task.id},

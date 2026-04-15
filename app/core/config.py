@@ -94,5 +94,17 @@ def get_settings() -> Settings:
     worker_id = os.getenv("WORKER_WORKER_ID")
     if worker_id is not None:
         payload.setdefault("worker", {})["worker_id"] = worker_id
+    storage_input_root = os.getenv("STORAGE_INPUT_ROOT")
+    if storage_input_root:
+        payload.setdefault("storage", {})["input_root"] = storage_input_root
+    storage_output_root = os.getenv("STORAGE_OUTPUT_ROOT")
+    if storage_output_root:
+        payload.setdefault("storage", {})["output_root"] = storage_output_root
+    storage_output_mode = os.getenv("STORAGE_OUTPUT_MODE")
+    if storage_output_mode:
+        payload.setdefault("storage", {})["output_mode"] = storage_output_mode
+    storage_output_suffix = os.getenv("STORAGE_OUTPUT_SUFFIX")
+    if storage_output_suffix:
+        payload.setdefault("storage", {})["output_suffix"] = storage_output_suffix
 
     return Settings.model_validate(payload)
