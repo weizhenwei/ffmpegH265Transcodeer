@@ -13,7 +13,7 @@
 - `主节点（Master）`：扫描输入目录、创建任务、分发任务、回收超时任务、统计结果。
 - `计算节点（Worker）`：启动注册、周期心跳、领取任务、执行 ffprobe + ffmpeg、回传结果。
 - `共享存储`：所有节点共享 `input/output` 目录。
-- `共享数据库`：所有节点共享 `DB_URL` 对应数据库（分布式推荐 PostgreSQL）。
+- `共享数据库`：单机与分布式验证均使用 SQLite（`sqlite:///./transcode.db`）。
 
 ## 3. 目录结构
 ```text
@@ -36,7 +36,7 @@ documents/
 ## 4. 环境要求
 - Python 3.11+
 - FFmpeg/ffprobe（建议加入 PATH）
-- 单机可用 SQLite，分布式建议 PostgreSQL
+- 单机与分布式验证均使用 SQLite（默认）
 
 ## 5. 安装初始化
 ```bash
@@ -82,19 +82,19 @@ python -m app.cli.main retry-failed --job-id <JOB_ID>
 ## 7. 分布式使用手册
 ### 7.1 准备共享资源
 - 所有节点挂载同一个输入目录与输出目录（例如 `/mnt/transcode/input`、`/mnt/transcode/output`）。
-- 所有节点连接同一个数据库（建议 PostgreSQL）。
+- 所有节点连接同一个数据库（本手册统一使用 SQLite）。
 
 ### 7.2 节点环境变量
 Windows PowerShell:
 ```powershell
-$env:DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+$env:DB_URL="sqlite:///./transcode.db"
 $env:STORAGE_INPUT_ROOT="\\nas\transcode\input"
 $env:STORAGE_OUTPUT_ROOT="\\nas\transcode\output"
 ```
 
 Linux/macOS:
 ```bash
-export DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+export DB_URL="sqlite:///./transcode.db"
 export STORAGE_INPUT_ROOT="/mnt/transcode/input"
 export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
 ```
@@ -151,24 +151,54 @@ python -m app.cli.main stats --job-id <JOB_ID>
 - `STORAGE_OUTPUT_MODE`（`mirror/flat`）
 - `STORAGE_OUTPUT_SUFFIX`
 
-## 10. Docker 使用
+## 10. SQLite 模式（单机 + 分布式验证）
+本项目默认使用 SQLite，适合快速验证单机与分布式核心流程。
+
+### 10.1 数据库配置
+Linux/macOS:
+```bash
+export DB_URL="sqlite:///./transcode.db"
+```
+
+Windows PowerShell:
+```powershell
+$env:DB_URL="sqlite:///./transcode.db"
+```
+
+### 10.2 初始化数据库表
+```bash
+python -m app.cli.main init
+```
+
+### 10.3 验证数据库接入
+```bash
+python -m app.cli.main workers
+python -m app.cli.main stats
+```
+
+### 10.4 使用注意
+- 分布式验证时建议所有进程运行在同一台机器，共用同一个 `transcode.db` 文件。
+- 已启用 SQLite 并发优化（WAL + busy_timeout），适合开发验证场景。
+- 生产环境或高并发多机部署再切换 PostgreSQL。
+
+## 11. Docker 使用
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
 docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
-## 11. 常见问题
-### 11.1 Worker 一直运行不退出
+## 12. 常见问题
+### 12.1 Worker 一直运行不退出
 - 正常行为。`run-worker` 是常驻进程。
 
-### 11.2 已提交任务但未执行
+### 12.2 已提交任务但未执行
 - 检查 `workers` 输出是否有在线节点。
 - 检查所有节点 `DB_URL` 是否一致。
 - 检查共享目录路径是否在所有节点可访问。
 
-### 11.3 ffmpeg/ffprobe 找不到
+### 12.3 ffmpeg/ffprobe 找不到
 - 安装后加入 PATH，或通过 `TRANSCODE_FFMPEG_BIN`/`TRANSCODE_FFPROBE_BIN` 指定绝对路径。
 
-### 11.4 输出目录无结果
+### 12.4 输出目录无结果
 - 用 `status/stats` 看失败或跳过数量。
 - 查看日志中的 `task_probe_failed` 或 `task_transcode_failed` 详情。

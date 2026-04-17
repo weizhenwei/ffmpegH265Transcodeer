@@ -11,7 +11,7 @@ ffmpegH265Transcodeer 是一个基于 FFmpeg 的 H.265 转码系统，采用 Mas
 - Master：任务扫描、任务派发、超时恢复、统计聚合
 - Worker：节点注册、心跳保活、转码执行、结果回传
 - 存储：共享 `input/output` 目录
-- 数据：共享元数据库（推荐 PostgreSQL）
+- 数据：共享元数据库（本手册统一使用 SQLite）
 
 ## 3. 功能特性
 - 支持输入格式：`.mp4`、`.m3u8`
@@ -25,7 +25,7 @@ ffmpegH265Transcodeer 是一个基于 FFmpeg 的 H.265 转码系统，采用 Mas
 ### 4.1 基础依赖
 - Python 3.11+
 - FFmpeg（含 ffprobe）
-- 数据库：单机可 SQLite，分布式推荐 PostgreSQL
+- 数据库：单机与分布式验证均使用 SQLite
 
 ### 4.2 依赖校验
 ```bash
@@ -92,14 +92,14 @@ python -m app.cli.main retry-failed --job-id <JOB_ID>
 ### 6.3 主节点配置
 Linux/macOS:
 ```bash
-export DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+export DB_URL="sqlite:///./transcode.db"
 export STORAGE_INPUT_ROOT="/mnt/transcode/input"
 export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
 ```
 
 Windows PowerShell:
 ```powershell
-$env:DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+$env:DB_URL="sqlite:///./transcode.db"
 $env:STORAGE_INPUT_ROOT="\\nas\transcode\input"
 $env:STORAGE_OUTPUT_ROOT="\\nas\transcode\output"
 ```
@@ -107,7 +107,7 @@ $env:STORAGE_OUTPUT_ROOT="\\nas\transcode\output"
 ### 6.4 计算节点配置
 每台计算节点设置唯一 `WORKER_WORKER_ID`：
 ```bash
-export DB_URL="postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode"
+export DB_URL="sqlite:///./transcode.db"
 export STORAGE_INPUT_ROOT="/mnt/transcode/input"
 export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
 export WORKER_WORKER_ID="worker-01"
@@ -173,14 +173,67 @@ python -m app.cli.main stats --job-id <JOB_ID>
 - `STORAGE_OUTPUT_MODE`
 - `STORAGE_OUTPUT_SUFFIX`
 
-## 9. 输出规则
+## 9. SQLite 数据库支持（单机 + 分布式验证）
+### 9.1 使用目标
+- 单机模式与分布式验证模式统一使用 SQLite。
+- 默认数据库文件：`./transcode.db`。
+
+### 9.2 配置连接串
+Linux/macOS:
+```bash
+export DB_URL="sqlite:///./transcode.db"
+```
+
+Windows PowerShell:
+```powershell
+$env:DB_URL="sqlite:///./transcode.db"
+```
+
+说明：
+- 分布式验证时所有进程需要指向同一个数据库文件。
+- 建议在同一台机器启动多个进程模拟分布式。
+
+### 9.3 初始化与验证
+```bash
+python -m app.cli.main init
+python -m app.cli.main workers
+python -m app.cli.main stats
+```
+
+### 9.4 用 Python 查看 transcode.db 数据
+查看所有表名：
+```bash
+python -c "import sqlite3; conn=sqlite3.connect('transcode.db'); c=conn.cursor(); c.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"); print([r[0] for r in c.fetchall()]); conn.close()"
+```
+
+查看 `jobs` 最近 10 条：
+```bash
+python -c "import sqlite3; conn=sqlite3.connect('transcode.db'); c=conn.cursor(); rows=c.execute(\"SELECT id,status,created_at FROM jobs ORDER BY created_at DESC LIMIT 10\").fetchall(); print(rows); conn.close()"
+```
+
+查看 `tasks` 最近 10 条：
+```bash
+python -c "import sqlite3; conn=sqlite3.connect('transcode.db'); c=conn.cursor(); rows=c.execute(\"SELECT id,job_id,status,worker_id,created_at FROM tasks ORDER BY created_at DESC LIMIT 10\").fetchall(); print(rows); conn.close()"
+```
+
+查看 `workers` 最近心跳：
+```bash
+python -c "import sqlite3; conn=sqlite3.connect('transcode.db'); c=conn.cursor(); rows=c.execute(\"SELECT worker_id,status,last_heartbeat_at FROM workers ORDER BY last_heartbeat_at DESC LIMIT 10\").fetchall(); print(rows); conn.close()"
+```
+
+### 9.5 并发能力说明
+- 项目已对 SQLite 启用并发优化（WAL、busy_timeout）。
+- 可满足开发调试与核心流程验证。
+- 高并发生产场景再切换 PostgreSQL。
+
+## 10. 输出规则
 - 输出封装：统一 `.mp4`
 - 输出命名：`原文件名 + 后缀 + .mp4`
 - `mirror`：保留输入目录层级
 - `flat`：输出平铺到目标目录
 
-## 10. 日志与可观测
-### 10.1 常见日志字段
+## 11. 日志与可观测
+### 11.1 常见日志字段
 - `timestamp`
 - `level`
 - `event`
@@ -188,45 +241,45 @@ python -m app.cli.main stats --job-id <JOB_ID>
 - `task_id`
 - `node_id`
 
-### 10.2 常见事件
+### 11.2 常见事件
 - 提交：`cli_submit_start`、`cli_submit_done`
 - 分发：`dispatch_started`、`task_dispatched`
 - 执行：`task_received`、`task_transcode_success`
 - 异常：`task_probe_failed`、`task_transcode_failed`、`task_recovered`
 
-### 10.3 指标端口
+### 11.3 指标端口
 - Master：`9108`
 - Worker：`9109`
 
-## 11. Docker 快速部署
+## 12. Docker 快速部署
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
 docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
-## 12. 常见问题排障
-### 12.1 worker 一直不退出
+## 13. 常见问题排障
+### 13.1 worker 一直不退出
 - 正常现象，worker 是常驻进程。
 
-### 12.2 有任务但不转码
+### 13.2 有任务但不转码
 - 检查 `python -m app.cli.main workers` 是否有在线节点。
 - 检查所有节点 `DB_URL` 一致且可连通。
 - 检查共享目录在所有节点均可读写。
 
-### 12.3 ffmpeg/ffprobe 报错
+### 13.3 ffmpeg/ffprobe 报错
 - 检查 PATH
 - 或设置 `TRANSCODE_FFMPEG_BIN`、`TRANSCODE_FFPROBE_BIN`
 
-### 12.4 m3u8 失败
+### 13.4 m3u8 失败
 - 多为源地址不可达或清单引用资源缺失
 - 可先用 MP4 验证系统链路是否正常
 
-### 12.5 失败任务太多
+### 13.5 失败任务太多
 - 先用 `stats` 看全局失败比例
 - 用 `status --job-id` 定位具体作业
 - 用 `retry-failed` 重试临时失败任务
 
-## 13. 运维建议
-- 生产优先使用 PostgreSQL，不建议长期使用 SQLite。
+## 14. 运维建议
+- 快速验证优先使用 SQLite，配置简单、开箱即用。
 - 多 worker 场景保持 `WORKER_WORKER_ID` 唯一。
 - 定期清理历史作业与任务数据，避免元数据库膨胀。

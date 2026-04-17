@@ -5,7 +5,10 @@ app:
   service_name: h265-transcoder
 
 db:
-  url: postgresql+psycopg://transcoder:transcoder@postgres:5432/transcode
+  # 默认使用本地 SQLite，确保开箱即用。
+  # 分布式部署请通过环境变量 DB_URL 覆盖为 PostgreSQL，例如：
+  # postgresql+psycopg://transcoder:transcoder@<db-host>:5432/transcode
+  url: sqlite:///./transcode.db
 
 storage:
   # 分布式部署建议使用共享存储挂载路径，所有 master/worker 节点保持一致
