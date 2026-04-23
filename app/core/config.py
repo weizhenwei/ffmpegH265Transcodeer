@@ -8,8 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AppSettings(BaseSettings):
-    role: str = "master"
-    node_id: str = "node-1"
+    role: Literal["master", "worker", "standalone"] = "master"
+    deployment_mode: Literal["standalone", "distributed"] = "standalone"
+    node_id: str = "node-01"
     log_level: str = "INFO"
     service_name: str = "h265-transcoder"
     model_config = SettingsConfigDict(env_prefix="APP_", extra="ignore")

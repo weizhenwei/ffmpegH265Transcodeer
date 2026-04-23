@@ -78,62 +78,48 @@ python -m app.cli.main retry-failed --job-id <JOB_ID>
 ### 步骤 6：确认输出
 - 检查 `data/out` 中是否生成 `*_h265.mp4`
 
-## 6. 分布式使用手册（详细）
-### 6.1 拓扑建议
-- 1 台主节点：运行 `run-master` 与发起转码命令
-- N 台计算节点：运行 `run-worker`
-- 1 套共享存储：所有节点都能访问输入/输出目录
-- 1 套共享数据库：所有节点统一 `DB_URL`
+## 6. 分布式多机部署指南
 
-### 6.2 共享存储规划示例
-- Linux：`/mnt/transcode/input`、`/mnt/transcode/output`
-- Windows：`\\nas\transcode\input`、`\\nas\transcode\output`
+在生产环境中，需要通过多台物理机/虚拟机横向扩展转码能力。系统通过**共享数据库**和**共享存储**支持真正的分布式部署。
 
-### 6.3 主节点配置
-Linux/macOS:
+### 6.1 基础设施要求
+1. **统一的 PostgreSQL 数据库**
+   - 不再使用本地的 SQLite。
+   - 需要提供一个独立运行的 PostgreSQL 实例。
+   - 所有 Master 和 Worker 节点必须配置相同的 `DB_URL`。
+
+2. **统一的共享存储 (关键!)**
+   - 由于系统本身不包含文件传输协议，所有的文件 I/O 必须通过本地路径访问。
+   - **所有的 Master 和 Worker 节点必须将共享存储（如 NFS、SMB、GlusterFS）挂载到机器的完全相同的位置**。
+   - **示例**：
+     - `节点 A (Master)` 挂载 NFS 到 `/mnt/shared/data`
+     - `节点 B (Worker)` 挂载同一 NFS 到 `/mnt/shared/data`
+     - `节点 C (Worker)` 挂载同一 NFS 到 `/mnt/shared/data`
+
+### 6.2 部署步骤示例
+
+**1. 准备配置**
+在所有节点的环境变量中注入以下配置：
 ```bash
-export DB_URL="sqlite:///./transcode.db"
-export STORAGE_INPUT_ROOT="/mnt/transcode/input"
-export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
+export DB_URL="postgresql+psycopg://transcoder:transcoder@192.168.1.100:5432/transcode"
+export WORKER_WORKER_ID="worker-$(hostname)" # 可选，否则自动生成
 ```
 
-Windows PowerShell:
-```powershell
-$env:DB_URL="sqlite:///./transcode.db"
-$env:STORAGE_INPUT_ROOT="\\nas\transcode\input"
-$env:STORAGE_OUTPUT_ROOT="\\nas\transcode\output"
-```
-
-### 6.4 计算节点配置
-每台计算节点设置唯一 `WORKER_WORKER_ID`：
-```bash
-export DB_URL="sqlite:///./transcode.db"
-export STORAGE_INPUT_ROOT="/mnt/transcode/input"
-export STORAGE_OUTPUT_ROOT="/mnt/transcode/output"
-export WORKER_WORKER_ID="worker-01"
-```
-
-### 6.5 分布式启动顺序
-1. 主节点初始化（一次）：
-```bash
-python -m app.cli.main init
-```
-2. 主节点启动调度循环：
+**2. 启动 Master 节点 (在节点 A 上)**
 ```bash
 python -m app.cli.main run-master
 ```
-3. 各计算节点启动 worker：
+
+**3. 启动 Worker 节点 (在节点 B 和 C 上)**
 ```bash
 python -m app.cli.main run-worker
 ```
-4. 主节点发起转码（共享目录）：
+
+**4. 提交任务 (任意能连数据库的节点)**
 ```bash
-python -m app.cli.main start-transcode
-```
-5. 主节点查看节点与统计：
-```bash
-python -m app.cli.main workers
-python -m app.cli.main stats
+python -m app.cli.main submit \
+  --input-root /mnt/shared/data/in \
+  --output-root /mnt/shared/data/out
 ```
 
 ## 7. 命令参考
@@ -257,27 +243,23 @@ docker compose -f deploy/docker-compose.yml up --build
 docker compose -f deploy/docker-compose.yml up --scale worker=3 -d
 ```
 
-## 13. 常见问题排障
-### 13.1 worker 一直不退出
-- 正常现象，worker 是常驻进程。
+## 13. 常见问题 (FAQ)
 
-### 13.2 有任务但不转码
-- 检查 `python -m app.cli.main workers` 是否有在线节点。
-- 检查所有节点 `DB_URL` 一致且可连通。
-- 检查共享目录在所有节点均可读写。
+### 13.1 "No database configured" 或 "Worker idle"
+- **原因**：节点之间数据库不通，或者没有共享队列。
+- **解决**：确保 `DB_URL` 在所有节点完全一致，且指向共享 PostgreSQL 实例（不能是 sqlite）。
 
-### 13.3 ffmpeg/ffprobe 报错
-- 检查 PATH
-- 或设置 `TRANSCODE_FFMPEG_BIN`、`TRANSCODE_FFPROBE_BIN`
+### 13.2 "No such file or directory" (在 Worker 节点)
+- **原因**：Worker 找不到输入文件。
+- **解决**：这是分布式共享存储没挂载好。请检查 Worker 节点上是否能通过配置的路径看到 Master 节点生成的文件。必须挂载 NFS。
 
-### 13.4 m3u8 失败
-- 多为源地址不可达或清单引用资源缺失
-- 可先用 MP4 验证系统链路是否正常
+### 13.3 "FFmpeg command failed"
+- **原因**：视频文件损坏或 FFmpeg 不支持某种格式。
+- **解决**：查看对应 Task ID 的日志。尝试用 `-c:v copy` 等配置跳过重编码。
 
-### 13.5 失败任务太多
-- 先用 `stats` 看全局失败比例
-- 用 `status --job-id` 定位具体作业
-- 用 `retry-failed` 重试临时失败任务
+### 13.4 任务卡在 "RUNNING"
+- **原因**：Worker 崩溃或者被强杀，没有发出完成信号。
+- **解决**：Master 节点的 `run-master` 进程有一个恢复循环，默认每 20 秒检查一次。它会自动把超时的 Task 重新放回队列（重试状态）。如果没启动 `run-master`，请启动它。
 
 ## 14. 运维建议
 - 快速验证优先使用 SQLite，配置简单、开箱即用。

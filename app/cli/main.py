@@ -43,9 +43,10 @@ def get_queue(settings, db: Database):
 def get_db(settings) -> Database:
     db = Database(settings.db.url)
     db.create_all()
+    mode = "distributed" if "postgres" in settings.db.url else "standalone"
     logger.info(
-        "database ready",
-        extra={"event": "database_ready", "service": settings.app.service_name, "node_id": settings.app.node_id},
+        f"database ready (mode: {mode})",
+        extra={"event": "database_ready", "mode": mode, "service": settings.app.service_name, "node_id": settings.app.node_id},
     )
     return db
 
